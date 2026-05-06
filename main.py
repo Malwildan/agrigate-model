@@ -16,7 +16,6 @@ openmeteo = openmeteo_requests.Client(session=retry_session)
 CROP_MAPPING = {0: 'Maize', 1: 'Potato', 2: 'Rice', 3: 'Sugarcane', 4: 'Tomato', 5: 'Wheat'}
 
 # --- 3. Define Input Schema ---
-# The user only sends location and soil pH now!
 class LocationCropRequest(BaseModel):
     latitude: float
     longitude: float
@@ -27,7 +26,7 @@ xgb_model = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global xgb_model
-    with open("agrigate-model.pkl", "rb") as f:
+    with open("model.pkl", "rb") as f:
         xgb_model = pickle.load(f)
     yield
     xgb_model = None
@@ -44,7 +43,8 @@ async def recommend_crop(data: LocationCropRequest):
         "longitude": data.longitude,
         "current": ["temperature_2m", "relative_humidity_2m"],
         "daily": ["precipitation_sum"],
-        "past_days": 90 # Fetch last 3 months of rain
+        "past_days": 90,
+        "timezone": "auto" # FIXED: Open-Meteo requires this for daily variables
     }
     
     try:
@@ -65,24 +65,29 @@ async def recommend_crop(data: LocationCropRequest):
         raise HTTPException(status_code=502, detail=f"Weather API Error: {str(e)}")
 
     # Step B: Prepare Data for XGBoost
-    input_df = pd.DataFrame([{
-        "Temperature": temp,
-        "Humidity": humidity,
-        "pH_Value": data.pH_Value,
-        "Rainfall": total_rainfall
-    }])
-    
-    # Step C: Predict and Map to String
-    prediction_idx = int(xgb_model.predict(input_df)[0])
-    recommended_crop = CROP_MAPPING.get(prediction_idx, "Unknown")
+    try:
+        input_df = pd.DataFrame([{
+            "Temperature": temp,
+            "Humidity": humidity,
+            "pH_Value": data.pH_Value,
+            "Rainfall": total_rainfall
+        }])
+        
+        # Step C: Predict and Map to String
+        prediction_idx = int(xgb_model.predict(input_df)[0])
+        recommended_crop = CROP_MAPPING.get(prediction_idx, "Unknown")
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Model Prediction Error: {str(e)}")
     
     return {
         "status": "success",
         "location": {"lat": data.latitude, "lon": data.longitude},
         "fetched_features": {
-            "temperature": round(temp, 2),
-            "humidity": round(humidity, 2),
-            "total_rainfall_90d": round(total_rainfall, 2)
+            # FIXED: Wrapped in float() so FastAPI can successfully convert them to JSON
+            "temperature": round(float(temp), 2),
+            "humidity": round(float(humidity), 2),
+            "total_rainfall_90d": round(float(total_rainfall), 2)
         },
         "recommendation": recommended_crop
     }
