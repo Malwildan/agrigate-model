@@ -1,5 +1,6 @@
 import pickle
 import pandas as pd
+import numpy as np # <-- Added NumPy to handle missing math
 import openmeteo_requests
 import requests
 from fastapi import FastAPI, HTTPException
@@ -21,8 +22,7 @@ class LocationCropRequest(BaseModel):
 xgb_model = None
 
 # --- 3. Bypass GitHub: Download Model on Startup ---
-# Replace this string with the actual public URL you got from Supabase (or elsewhere)
-MODEL_URL = "https://ncxiqbnmmmkyvuslrwzu.supabase.co/storage/v1/object/public/model_agrigate/model.pkl" 
+MODEL_URL = "https://wpxikzshqksgyjckntrt.supabase.co/storage/v1/object/public/models/model.pkl" 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -31,15 +31,12 @@ async def lifespan(app: FastAPI):
     
     print("Downloading fresh model from cloud...")
     try:
-        # Download the model directly from the URL
         response = requests.get(MODEL_URL)
-        response.raise_for_status() # Ensure the download was successful
+        response.raise_for_status() 
         
-        # Save it securely to the Railway server's temporary disk space
         with open(temp_model_path, "wb") as f:
             f.write(response.content)
             
-        # Load the fresh, uncorrupted binary data into memory
         with open(temp_model_path, "rb") as f:
             xgb_model = pickle.load(f)
             
@@ -47,9 +44,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"CRITICAL ERROR: Failed to load model from URL: {e}")
         
-    yield # The server runs here
+    yield 
     
-    # Cleanup on shutdown
     xgb_model = None
     if os.path.exists(temp_model_path):
         os.remove(temp_model_path)
@@ -78,13 +74,18 @@ def recommend_crop(data: LocationCropRequest):
         responses = openmeteo.weather_api(url, params=params)
         response = responses[0]
         
+        # Extract Current Temp and Humidity (Safely fallback to averages if NaN)
         current = response.Current()
-        temp = float(current.Variables(0).Value())
-        humidity = float(current.Variables(1).Value())
+        raw_temp = current.Variables(0).Value()
+        raw_hum = current.Variables(1).Value()
         
+        temp = float(raw_temp) if not np.isnan(raw_temp) else 25.0
+        humidity = float(raw_hum) if not np.isnan(raw_hum) else 70.0
+        
+        # Extract Historical Rainfall (Safely sum it, ignoring NaNs)
         daily = response.Daily()
         rainfall_array = daily.Variables(0).ValuesAsNumpy()
-        total_rainfall = float(rainfall_array.sum())
+        total_rainfall = float(np.nansum(rainfall_array)) # <-- THE FIX IS HERE
         
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Weather API Error: {str(e)}")
