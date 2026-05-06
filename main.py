@@ -22,7 +22,7 @@ class LocationCropRequest(BaseModel):
 xgb_model = None
 
 # --- 3. Bypass GitHub: Download Model on Startup ---
-MODEL_URL = "https://wpxikzshqksgyjckntrt.supabase.co/storage/v1/object/public/models/model.pkl" 
+MODEL_URL = "https://ncxiqbnmmmkyvuslrwzu.supabase.co/storage/v1/object/public/model_agrigate/model.pkl" 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
