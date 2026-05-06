@@ -1,21 +1,18 @@
 import pickle
 import pandas as pd
 import openmeteo_requests
-import requests_cache
-from retry_requests import retry
+import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+import os
 
 # --- 1. Setup Open-Meteo Client ---
-cache_session = requests_cache.CachedSession('.cache', expire_after=3600)
-retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
-openmeteo = openmeteo_requests.Client(session=retry_session)
+openmeteo = openmeteo_requests.Client()
 
 # --- 2. Label Mapping ---
 CROP_MAPPING = {0: 'Maize', 1: 'Potato', 2: 'Rice', 3: 'Sugarcane', 4: 'Tomato', 5: 'Wheat'}
 
-# --- 3. Define Input Schema ---
 class LocationCropRequest(BaseModel):
     latitude: float
     longitude: float
@@ -23,20 +20,50 @@ class LocationCropRequest(BaseModel):
 
 xgb_model = None
 
+# --- 3. Bypass GitHub: Download Model on Startup ---
+# Replace this string with the actual public URL you got from Supabase (or elsewhere)
+MODEL_URL = "https://ncxiqbnmmmkyvuslrwzu.supabase.co/storage/v1/object/public/model_agrigate/model.pkl" 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global xgb_model
-    with open("model.pkl", "rb") as f:
-        xgb_model = pickle.load(f)
-    yield
+    temp_model_path = "temp_model.pkl"
+    
+    print("Downloading fresh model from cloud...")
+    try:
+        # Download the model directly from the URL
+        response = requests.get(MODEL_URL)
+        response.raise_for_status() # Ensure the download was successful
+        
+        # Save it securely to the Railway server's temporary disk space
+        with open(temp_model_path, "wb") as f:
+            f.write(response.content)
+            
+        # Load the fresh, uncorrupted binary data into memory
+        with open(temp_model_path, "rb") as f:
+            xgb_model = pickle.load(f)
+            
+        print("Model downloaded and loaded successfully!")
+    except Exception as e:
+        print(f"CRITICAL ERROR: Failed to load model from URL: {e}")
+        
+    yield # The server runs here
+    
+    # Cleanup on shutdown
     xgb_model = None
+    if os.path.exists(temp_model_path):
+        os.remove(temp_model_path)
 
 app = FastAPI(lifespan=lifespan)
 
 # --- 4. The Smart Endpoint ---
 @app.post("/recommend-crop")
-async def recommend_crop(data: LocationCropRequest):
-    # Step A: Fetch Weather Data from Open-Meteo
+def recommend_crop(data: LocationCropRequest):
+    
+    if xgb_model is None:
+         raise HTTPException(status_code=500, detail="The model failed to load on startup. Check the logs.")
+         
+    # Fetch Weather Data from Open-Meteo
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": data.latitude,
@@ -44,27 +71,25 @@ async def recommend_crop(data: LocationCropRequest):
         "current": ["temperature_2m", "relative_humidity_2m"],
         "daily": ["precipitation_sum"],
         "past_days": 90,
-        "timezone": "auto" # FIXED: Open-Meteo requires this for daily variables
+        "timezone": "auto"
     }
     
     try:
         responses = openmeteo.weather_api(url, params=params)
         response = responses[0]
         
-        # Extract Current Temp and Humidity
         current = response.Current()
-        temp = current.Variables(0).Value()
-        humidity = current.Variables(1).Value()
+        temp = float(current.Variables(0).Value())
+        humidity = float(current.Variables(1).Value())
         
-        # Extract Historical Rainfall and sum it up
         daily = response.Daily()
         rainfall_array = daily.Variables(0).ValuesAsNumpy()
-        total_rainfall = rainfall_array.sum()
+        total_rainfall = float(rainfall_array.sum())
         
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Weather API Error: {str(e)}")
 
-    # Step B: Prepare Data for XGBoost
+    # Prepare Data for XGBoost
     try:
         input_df = pd.DataFrame([{
             "Temperature": temp,
@@ -73,7 +98,7 @@ async def recommend_crop(data: LocationCropRequest):
             "Rainfall": total_rainfall
         }])
         
-        # Step C: Predict and Map to String
+        # Predict and Map to String
         prediction_idx = int(xgb_model.predict(input_df)[0])
         recommended_crop = CROP_MAPPING.get(prediction_idx, "Unknown")
         
@@ -84,10 +109,9 @@ async def recommend_crop(data: LocationCropRequest):
         "status": "success",
         "location": {"lat": data.latitude, "lon": data.longitude},
         "fetched_features": {
-            # FIXED: Wrapped in float() so FastAPI can successfully convert them to JSON
-            "temperature": round(float(temp), 2),
-            "humidity": round(float(humidity), 2),
-            "total_rainfall_90d": round(float(total_rainfall), 2)
+            "temperature": round(temp, 2),
+            "humidity": round(humidity, 2),
+            "total_rainfall_90d": round(total_rainfall, 2)
         },
         "recommendation": recommended_crop
     }
