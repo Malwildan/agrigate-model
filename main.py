@@ -27,7 +27,7 @@ xgb_model = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global xgb_model
-    with open("model.pkl", "rb") as f:
+    with open("agrigate-model.pkl", "rb") as f:
         xgb_model = pickle.load(f)
     yield
     xgb_model = None
