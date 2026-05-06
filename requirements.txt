@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+xgboost
+pandas
+pydantic
+openmeteo-requests
+requests-cache
+retry-requests
