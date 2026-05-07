@@ -21,7 +21,7 @@ class LocationCropRequest(BaseModel):
 
 xgb_model = None
 
-# --- 3. Bypass GitHub: Download Model on Startup ---
+# --- 3. Download Model on Supabase Storage ---
 MODEL_URL = "https://ncxiqbnmmmkyvuslrwzu.supabase.co/storage/v1/object/public/model_agrigate/model.pkl" 
 
 @asynccontextmanager
