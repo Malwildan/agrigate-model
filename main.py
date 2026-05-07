@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# --- 4. The Smart Endpoint ---
+# --- 4. The Endpoint ---
 @app.post("/recommend-crop")
 def recommend_crop(data: LocationCropRequest):
     
